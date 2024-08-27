@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>QR Code Scanner</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-image: url('QR배경.png'); /* 배경 이미지 설정 */
+            background-size: cover; /* 배경 이미지가 창에 가득 차도록 설정 */
+        }
+        #qrScanner {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            padding: 20px;
+            border-radius: 10px;
+        }
+        #qrCodeInfo {
+            margin-top: 20px;
+            font-size: 18px;
+            font-weight: bold;
+            display: none; 
+        }
+        #video {
+            width: 80%; /* 비디오 요소의 폭을 조절합니다. */
+            height: auto; /* 높이를 자동으로 설정하여 비율을 유지합니다. */
+            max-width: 1000px; /* 최대 폭을 설정합니다. */
+            max-height: 1000px; /* 최대 높이를 설정합니다. */
+        }
+    </style>
+</head>
+<body>
+    
+    <div id="qrScanner">
+        <!-- QR 코드 스캐너 영역 -->
+        <video id="video" style="display: on;" autoplay></video>
+        <canvas id="canvas" style="display: none; background-color: rgba(0, 0, 0, 0);"></canvas>
+        <div id="qrCodeInfo"></div>
+    </div>
+
+    <!-- 사용된 라이브러리: jQuery, jsQR -->
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+    <script>
+        $(document).ready(function() {//문서가 준비되면 실행 
+            const video = document.getElementById('video');
+            const canvas = document.getElementById('canvas');
+            const context = canvas.getContext('2d');
+            const qrCodeInfo = document.getElementById('qrCodeInfo');
+            let scanning = true;
+
+            navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment", width: 1920, height: 1080 } })
+                .then(stream => {
+                    video.srcObject = stream;
+                    video.play();//비디오 재생 시작
+                    captureQRCode(); // 사용자가 QR 코드를 보여주자 마자 바로 캡쳐 및 처리 시작
+                })
+                .catch(err => {
+                    console.error('Video capture error:', err);
+                    qrCodeInfo.textContent = 'Video capture error: ' + err.message;
+                });
+
+                
+            
+
+            function captureQRCode() {
+                // 시작 시간 기록
+                const startTime = performance.now();//현재 시간을 기록하여 시작 시간으로 설정 
+                // 비디오 프레임을 캡쳐하여 Canvas에 그리기
+                context.drawImage(video, 0, 0, canvas.width, canvas.height);
+                
+                // Canvas에서 QR 코드 부분만 필터링하여 인식
+                const imageData = context.getImageData(0, 0, canvas.width, canvas.height);//캔버스의 이미지 데이터를 가져오기
+                const enhancedData = applyImageEnhancements(imageData);//이미지 향상 함수 호출
+                const code = jsQR(enhancedData.data, enhancedData.width, enhancedData.height, {//jsQR 라이브러리를 사용하여 QR 코드 인식
+                    inversionAttempts: "dontInvert",
+                });
+
+                if (code) {
+                    // QR 코드가 인식된 경우
+                    scanning = false;
+                    qrCodeInfo.textContent = "QR Code Info: " + code.data;//QR 코드 정보를 표시
+                    
+                    const endTime = performance.now();//현재 시간을 기록하여 종료 시간으로 설정
+                    const processingTime = (endTime - startTime) / 1000; // 초 단위로 변환
+                    
+                    sendDataToServer(code.data, processingTime);//서버로 QR 코드 데이터와 처리 시간 전송
+                } else {
+                    // QR 코드가 인식되지 않은 경우 재시도
+                    requestAnimationFrame(captureQRCode);
+                }
+            }
+
+            function applyImageEnhancements(imageData) {
+                // 그레이스케일 필터 적용
+                const pixels = imageData.data;//이미지 데이터의 픽셀 배열을 가져옴
+                for (let i = 0; i < pixels.length; i += 4) {//모든 픽셀을 순회
+                    const lightness = parseInt((pixels[i] * 0.299 + pixels[i + 1] * 0.587 + pixels[i + 2] * 0.114), 10);//픽셀의 밝기를 계산
+                    pixels[i] = lightness; // red
+                    pixels[i + 1] = lightness; // green
+                    pixels[i + 2] = lightness; // blue
+                }
+
+                // 가우시안 블러 필터 적용
+                return applyGaussianBlur(imageData);// 가우시안 블러 필터 함수 호출
+            }
+
+            function applyGaussianBlur(imageData) {
+                const kernelSize = 5; // 커널 크기 설정
+                const sigma = 1.0; // 표준 편차 설정
+                const kernel = createGaussianKernel(kernelSize, sigma);//가우시안 커널 생성
+                return convolve(imageData, kernel);//커널을 사용하여 컨볼루션 수행
+            }
+
+            //커널 생성
+            function createGaussianKernel(size, sigma) {
+                const kernel = [];
+                let sum = 0;//커널 값의 합을 저장할 변수 초기화
+                const half = Math.floor(size / 2);//커널 크기의 절반 계산 
+
+                for (let y = -half; y <= half; y++) {//커널의 모든 값을 계산
+                    for (let x = -half; x <= half; x++) {
+                        const value = (1 / (2 * Math.PI * sigma ** 2)) * Math.exp(-(x ** 2 + y ** 2) / (2 * sigma ** 2));//가우시안 함수 계산
+                        kernel.push(value);//커널 배열에 값 추가
+                        sum += value;//커널 값의 합 계산
+                    }
+                }
+
+                // Normalize the kernel
+                return kernel.map(value => value / sum);//커널 값을 합이 1이 되도록 정규화
+            }
+
+            function convolve(imageData, kernel) {
+                const width = imageData.width;//이미지의 너비 가져오기
+                const height = imageData.height;//이미지의 높이 가져오기
+                const outputData = context.createImageData(width, height);// 출력 이미지 데이터 생성
+                const inputData = imageData.data;//입력 이미지 데이터 가져오기
+                const outputPixels = outputData.data;//출력 이미지의 픽셀 배열 가져오기
+                const half = Math.floor(Math.sqrt(kernel.length) / 2);//커널 크기의 절반 계산 
+
+                for (let y = 0; y < height; y++) {//이미지의 모든 픽셀을 순회
+                    for (let x = 0; x < width; x++) {
+                        let r = 0, g = 0, b = 0;//RGB 값을 초기화
+                        for (let ky = -half; ky <= half; ky++) {//커널의 모든 값을 순회
+                            for (let kx = -half; kx <= half; kx++) {
+                                const px = Math.min(width - 1, Math.max(0, x + kx));//픽셀의 x 좌표 계산
+                                const py = Math.min(height - 1, Math.max(0, y + ky));//픽셀의 y 좌표 계산
+                                const pixelIndex = (py * width + px) * 4;//픽셀 인덱스 계산
+                                const weight = kernel[(ky + half) * (half * 2 + 1) + (kx + half)];//커널 값 가져오기
+                                r += inputData[pixelIndex] * weight;//빨간색 채널에 가중치 적용
+                                g += inputData[pixelIndex + 1] * weight;//녹색 채널에 가중치 적용
+                                b += inputData[pixelIndex + 2] * weight;//파란색 채널에 가중치 적용
+                            }
+                        }
+                        const outputIndex = (y * width + x) * 4;//출력 픽셀 인덱스 계산
+                        outputPixels[outputIndex] = r;//출력 이미지의 빨간색 채널 설정
+                        outputPixels[outputIndex + 1] = g;//출력 이미지의 녹색 채널 설정
+                        outputPixels[outputIndex + 2] = b;//출력 이미지의 파란색 채널 설정
+                        outputPixels[outputIndex + 3] = 255;//출력 이미지의 알파 채널 설정(8비트)
+                    }
+                }
+
+                return outputData;// 출력 이미지 데이터 반환
+            }
+
+            function sendDataToServer(data, processingTime) {
+                // 서버로 데이터 전송하는 함수
+                $.ajax({
+                    url: 'save_data.php',//데이터를 전송할 서버 URL
+                    type: 'POST',
+                    data: { scannedData: data, processingTime: processingTime },
+                    dataType: 'json',
+                    success: function(response) {
+                        console.log('Server response:', response);
+                        if (response.error) {
+                            qrCodeInfo.textContent = 'Error: ' + response.error;
+                        } else if (response.role === '고객') {
+                            window.location.href = '스마트오더키오스크_메뉴화면.php';
+                        } else if (response.role === '관리자') {
+                            window.location.href = '스마트오더키오스크_관리자페이지.php';
+                        }
+                    },
+                    error: function(xhr, status, error) {
+                        console.error('Error sending data:', error);
+                        qrCodeInfo.textContent = 'AJAX Error: ' + error;
+                    }
+                });
+            }
+        });
+    </script>
+</body>
+</html>
